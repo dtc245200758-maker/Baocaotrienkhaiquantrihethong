@@ -1,0 +1,153 @@
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-restaurant_db}
+      POSTGRES_USER: ${POSTGRES_USER:-restaurant_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks:
+      - internal
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      PORT: "4000"
+      DATABASE_URL: postgres://${POSTGRES_USER:-restaurant_app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-restaurant_db}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "4000"
+    networks:
+      - internal
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1/ || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - internal
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@restaurant.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?Set PGADMIN_DEFAULT_PASSWORD in .env}
+      PGADMIN_DISABLE_POSTFIX: "true"
+    ports:
+      - "127.0.0.1:5050:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    depends_on:
+      - backend
+    networks:
+      - internal
+
+  loki:
+    image: grafana/loki:3.2.1
+    command:
+      - -config.file=/etc/loki/config.yml
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/config.yml:ro
+      - lokidata:/loki
+    networks:
+      - internal
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - internal
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    command:
+      - -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:
+  lokidata:
+
+networks:
+  internal:
+    driver: bridge
