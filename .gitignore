@@ -4,3 +4,15 @@ frontend/dist/
 coverage/
 *.log
 .DS_Store
+
+# Local backups and temporary files
+backups/
+*.bak
+
+# Local HTTPS development certificates and private keys
+*.key
+*.crt
+
+# Environment overrides
+.env.*
+!.env.example
